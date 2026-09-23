@@ -98,3 +98,42 @@ seconds (default 1.6s; pass `nil` to require the caller to clear it).
 ## License
 
 MIT
+
+## Custom sheets
+
+```swift
+.kitoSheet(isPresented: $shows, configuration: KitoSheetConfiguration(
+    detents: [.fit, .fraction(0.6), .large],   // drag between them; rubber-bands past the top
+    style: .floating,                          // .attached, .glass
+    blursBackdrop: true
+)) { FiltersView() }
+```
+
+## Alerts, menus and tips
+
+```swift
+@State private var alert: KitoAlert?
+.kitoAlert($alert)
+alert = KitoAlert(systemImage: "trash.fill", title: "Delete account?", message: "This can't be undone.",
+                  actions: [.cancel(), KitoAlertAction("Delete", role: .destructive) { delete() }])
+alert = KitoAlert(systemImage: "party.popper.fill", title: "Order placed!", celebrates: true)   // confetti
+
+.kitoActionMenu(isPresented: $shows, title: "Profile photo", actions: [
+    KitoMenuAction("Take photo", systemImage: "camera") { … },
+    KitoMenuAction("Remove photo", systemImage: "trash", isDestructive: true) { … },
+])
+
+Button { … }.kitoTooltip(isPresented: $tip, "Create your first list", edge: .top)
+```
+
+## Slide to confirm and hero cards
+
+```swift
+KitoSlideToConfirm("Slide to pay", systemImage: "creditcard.fill", tint: .green) { await pay() }
+
+KitoHeroContainer {
+    ScrollView {
+        KitoHeroCard(id: story.id) { StoryFace(story) } expanded: { StoryBody(story) }
+    }
+}
+```
