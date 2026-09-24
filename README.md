@@ -1,5 +1,7 @@
 # KitoModals
 
+**[Documentation](https://wyksofts-inc.github.io/KitoModals/documentation/kitomodals/)**
+
 Route-based bottom sheets, one-binding confirmation dialogs, themed corner
 radius and drag indicators for free.
 
