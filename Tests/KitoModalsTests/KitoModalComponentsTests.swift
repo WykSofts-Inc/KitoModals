@@ -11,7 +11,7 @@ import SwiftUI
 @testable import KitoModals
 
 final class KitoModalComponentsTests: XCTestCase {
-    private typealias Sheet = KitoSheetModifier<EmptyView>
+    private typealias Sheet = KitoSheetModifier<EmptyView, EmptyView>
 
     func testDetentsResolveAndClampToTheScreen() {
         XCTAssertEqual(Sheet.resolve(.fit, content: 300, screen: 874, topInset: 62, grabber: true), 329)
@@ -60,5 +60,12 @@ final class KitoModalComponentsTests: XCTestCase {
         XCTAssertTrue(KitoSlideToConfirm.confirms(offset: 86, track: 100))
         XCTAssertFalse(KitoSlideToConfirm.confirms(offset: 80, track: 100))
         XCTAssertFalse(KitoSlideToConfirm.confirms(offset: 0, track: 0))
+    }
+
+    func testSheetContentModeDefaultsToFitted() {
+        XCTAssertEqual(KitoSheetConfiguration.default.contentMode, .fitted)
+        let scrollable = KitoSheetConfiguration.scrollable(detents: [.large])
+        XCTAssertEqual(scrollable.contentMode, .scrollable)
+        XCTAssertEqual(scrollable.detents, [.large])
     }
 }
