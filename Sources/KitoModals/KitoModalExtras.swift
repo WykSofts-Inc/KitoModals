@@ -290,6 +290,8 @@ public struct KitoSlideToConfirm: View {
 
     @Environment(\.kitoTheme) private var theme
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.layoutDirection) private var layoutDirection
+    /// Distance from the start of the track, toward the trailing edge.
     @State private var offset: CGFloat = 0
     @State private var phase: Phase = .idle
     @State private var shimmer = false
@@ -307,7 +309,7 @@ public struct KitoSlideToConfirm: View {
     ///   - resetID: change this value to put the control back to the start, e.g. after the
     ///     person edits their order.
     ///   - onConfirm: the work to do. Return to succeed; throw to fail and slide back.
-    public init(_ title: String = "Slide to confirm", systemImage: String = "chevron.right", tint: Color? = nil,
+    public init(_ title: String = "Slide to confirm", systemImage: String = "chevron.forward", tint: Color? = nil,
                 failureTitle: String = "Try again", resetAfter: Duration? = nil, resetID: AnyHashable? = nil,
                 onConfirm: @escaping () async throws -> Void) {
         self.title = title
@@ -367,7 +369,9 @@ public struct KitoSlideToConfirm: View {
                         DragGesture()
                             .onChanged { value in
                                 guard phase == .idle else { return }
-                                offset = min(max(value.translation.width, 0), track)
+                                // Drag widths are physical; the knob's offset mirrors in RTL.
+                                let dx = value.translation.width * (layoutDirection == .rightToLeft ? -1 : 1)
+                                offset = min(max(dx, 0), track)
                             }
                             .onEnded { _ in
                                 guard phase == .idle else { return }

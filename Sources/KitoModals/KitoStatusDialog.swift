@@ -58,6 +58,8 @@ public struct KitoStatusDialogView: View {
                         .trim(from: 0, to: iconTrim)
                         .stroke(theme.colors.success, style: StrokeStyle(lineWidth: 4.5, lineCap: .round, lineJoin: .round))
                         .frame(width: 36, height: 36)
+                        // Shapes mirror in right-to-left layouts; a tick must not.
+                        .environment(\.layoutDirection, .leftToRight)
                 case .failure:
                     KitoXmarkShape()
                         .trim(from: 0, to: iconTrim)
