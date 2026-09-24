@@ -137,3 +137,11 @@ KitoHeroContainer {
     }
 }
 ```
+
+## Right-to-left
+
+- Sheets, alerts, menus and tips mirror automatically; sheet drags are vertical, so they need nothing.
+- `KitoSlideToConfirm` slides toward the trailing edge (right to left in Arabic or Hebrew) and the knob now
+  follows the finger there; its default icon is `chevron.forward`. A custom `systemImage` should be a
+  direction-neutral or auto-mirroring symbol.
+- The status dialog's drawn tick is kept unmirrored, like the system checkmark.
