@@ -31,6 +31,16 @@ public enum KitoSheetStyle: Equatable, Sendable {
     case glass
 }
 
+/// How the sheet treats its content.
+public enum KitoSheetContentMode: Equatable, Sendable {
+    /// The content keeps its natural height and the whole sheet is draggable. Best for short
+    /// content such as a confirmation or a picker.
+    case fitted
+    /// The content scrolls inside the sheet. The sheet drags from the grabber and header, or
+    /// when the content is pulled down while already scrolled to the top. Use for long lists.
+    case scrollable
+}
+
 public struct KitoSheetConfiguration: Sendable {
     public var detents: [KitoSheetDetent]
     public var style: KitoSheetStyle
@@ -45,10 +55,13 @@ public struct KitoSheetConfiguration: Sendable {
     public var cornerRadius: CGFloat
     /// The sheet's fill; nil uses `theme.colors.surface`.
     public var background: Color?
+    /// Fitted (default) or scrollable content.
+    public var contentMode: KitoSheetContentMode
 
     public init(detents: [KitoSheetDetent] = [.fit], style: KitoSheetStyle = .attached, showsGrabber: Bool = true,
                 dismissesOnBackdropTap: Bool = true, dismissesOnDrag: Bool = true, backdropOpacity: Double = 0.4,
-                blursBackdrop: Bool = false, cornerRadius: CGFloat = 32, background: Color? = nil) {
+                blursBackdrop: Bool = false, cornerRadius: CGFloat = 32, background: Color? = nil,
+                contentMode: KitoSheetContentMode = .fitted) {
         self.detents = detents.isEmpty ? [.fit] : detents
         self.style = style
         self.showsGrabber = showsGrabber
@@ -58,9 +71,15 @@ public struct KitoSheetConfiguration: Sendable {
         self.blursBackdrop = blursBackdrop
         self.cornerRadius = cornerRadius
         self.background = background
+        self.contentMode = contentMode
     }
 
     public static let `default` = KitoSheetConfiguration()
+
+    /// Scrollable content with the given detents, e.g. `.scrollable(detents: [.fraction(0.5), .large])`.
+    public static func scrollable(detents: [KitoSheetDetent] = [.fraction(0.55), .large]) -> KitoSheetConfiguration {
+        KitoSheetConfiguration(detents: detents, contentMode: .scrollable)
+    }
 }
 
 public extension View {
@@ -69,13 +88,23 @@ public extension View {
     /// Attach it to a full-screen container.
     func kitoSheet<SheetContent: View>(isPresented: Binding<Bool>, configuration: KitoSheetConfiguration = .default,
                                        @ViewBuilder content: @escaping () -> SheetContent) -> some View {
-        modifier(KitoSheetModifier(isPresented: isPresented, configuration: configuration, sheet: content))
+        modifier(KitoSheetModifier(isPresented: isPresented, configuration: configuration, header: { EmptyView() }, sheet: content))
+    }
+
+    /// A custom bottom sheet with a fixed header (a title, a search field) above the content.
+    /// The header never scrolls, and with `.scrollable` content it is, together with the
+    /// grabber, the part of the sheet you drag.
+    func kitoSheet<SheetHeader: View, SheetContent: View>(isPresented: Binding<Bool>, configuration: KitoSheetConfiguration = .default,
+                                                          @ViewBuilder header: @escaping () -> SheetHeader,
+                                                          @ViewBuilder content: @escaping () -> SheetContent) -> some View {
+        modifier(KitoSheetModifier(isPresented: isPresented, configuration: configuration, header: header, sheet: content))
     }
 }
 
-struct KitoSheetModifier<SheetContent: View>: ViewModifier {
+struct KitoSheetModifier<SheetHeader: View, SheetContent: View>: ViewModifier {
     @Binding var isPresented: Bool
     let configuration: KitoSheetConfiguration
+    @ViewBuilder let header: () -> SheetHeader
     @ViewBuilder let sheet: () -> SheetContent
 
     @Environment(\.kitoTheme) private var theme
@@ -83,6 +112,14 @@ struct KitoSheetModifier<SheetContent: View>: ViewModifier {
     @State private var detentIndex = 0
     @State private var drag: CGFloat = 0
     @State private var contentHeight: CGFloat = 0
+    @State private var headerHeight: CGFloat = 0
+    /// Scrollable mode: whether the content is scrolled to its top.
+    @State private var scrollAtTop = true
+    /// Scrollable mode: set when a drag on the content starts, true if it is pulling the sheet down.
+    @State private var pullingSheet: Bool?
+
+    private static var scrollSpace: String { "KitoSheetScroll" }
+    private var scrollable: Bool { configuration.contentMode == .scrollable }
 
     private var animation: Animation { reduceMotion ? .easeInOut(duration: 0.25) : .spring(response: 0.42, dampingFraction: 0.84) }
 
@@ -93,7 +130,7 @@ struct KitoSheetModifier<SheetContent: View>: ViewModifier {
                 GeometryReader { proxy in
                     let insets = proxy.safeAreaInsets
                     let screenHeight = proxy.size.height + insets.top + insets.bottom
-                    let heights = configuration.detents.map { Self.resolve($0, content: contentHeight, screen: screenHeight, topInset: insets.top, grabber: configuration.showsGrabber) }
+                    let heights = configuration.detents.map { Self.resolve($0, content: contentHeight + headerHeight, screen: screenHeight, topInset: insets.top, grabber: configuration.showsGrabber) }
                     let current = heights[min(detentIndex, heights.count - 1)]
                     let visibleHeight = Self.visibleHeight(current: current, tallest: heights.max() ?? current, drag: drag)
 
@@ -126,14 +163,39 @@ struct KitoSheetModifier<SheetContent: View>: ViewModifier {
             bottomTrailingRadius: floating ? configuration.cornerRadius : 0, topTrailingRadius: configuration.cornerRadius, style: .continuous
         )
         VStack(spacing: 0) {
-            if configuration.showsGrabber {
-                Capsule().fill(theme.colors.onSurface.opacity(0.25)).frame(width: 40, height: 5).padding(.top, 10).padding(.bottom, 6)
-                    .accessibilityHidden(true)
+            VStack(spacing: 0) {
+                if configuration.showsGrabber {
+                    Capsule().fill(theme.colors.onSurface.opacity(0.25)).frame(width: 40, height: 5).padding(.top, 10).padding(.bottom, 6)
+                        .accessibilityHidden(true)
+                }
+                header()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(GeometryReader { g in Color.clear.preference(key: KitoSheetHeaderHeightKey.self, value: g.size.height) })
             }
-            sheet()
-                .fixedSize(horizontal: false, vertical: true)
-                .background(GeometryReader { g in Color.clear.preference(key: KitoSheetContentHeightKey.self, value: g.size.height) })
-                .frame(maxHeight: .infinity, alignment: .top)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle())
+            .gesture(scrollable ? sheetDrag(heights: heights) : nil)
+
+            if scrollable {
+                ScrollView {
+                    VStack(spacing: 0) {
+                        GeometryReader { g in
+                            Color.clear.preference(key: KitoSheetScrollTopKey.self, value: g.frame(in: .named(Self.scrollSpace)).minY)
+                        }
+                        .frame(height: 0)
+                        sheet()
+                            .background(GeometryReader { g in Color.clear.preference(key: KitoSheetContentHeightKey.self, value: g.size.height) })
+                    }
+                }
+                .coordinateSpace(name: Self.scrollSpace)
+                .onPreferenceChange(KitoSheetScrollTopKey.self) { scrollAtTop = $0 >= -1 }
+                .simultaneousGesture(pullDownFromTop(heights: heights))
+            } else {
+                sheet()
+                    .fixedSize(horizontal: false, vertical: true)
+                    .background(GeometryReader { g in Color.clear.preference(key: KitoSheetContentHeightKey.self, value: g.size.height) })
+                    .frame(maxHeight: .infinity, alignment: .top)
+            }
         }
         .padding(.bottom, floating ? 0 : bottomInset)
         .frame(maxWidth: .infinity)
@@ -150,13 +212,31 @@ struct KitoSheetModifier<SheetContent: View>: ViewModifier {
         .padding(.horizontal, floating ? 10 : 0)
         .padding(.bottom, floating ? max(bottomInset, 10) : 0)
         .onPreferenceChange(KitoSheetContentHeightKey.self) { contentHeight = $0 }
-        .gesture(
-            DragGesture()
-                .onChanged { drag = $0.translation.height }
-                .onEnded { value in settle(translation: value.translation.height, predicted: value.predictedEndTranslation.height, heights: heights) }
-        )
+        .onPreferenceChange(KitoSheetHeaderHeightKey.self) { headerHeight = $0 }
+        .gesture(scrollable ? nil : sheetDrag(heights: heights))
         .accessibilityElement(children: .contain)
         .accessibilityAction(.escape) { dismiss() }
+    }
+
+    private func sheetDrag(heights: [CGFloat]) -> some Gesture {
+        DragGesture()
+            .onChanged { drag = $0.translation.height }
+            .onEnded { value in settle(translation: value.translation.height, predicted: value.predictedEndTranslation.height, heights: heights) }
+    }
+
+    /// Scrollable mode: a drag on the content moves the sheet only if it starts downwards while
+    /// the content is at its top; otherwise the scroll view has it.
+    private func pullDownFromTop(heights: [CGFloat]) -> some Gesture {
+        DragGesture()
+            .onChanged { value in
+                if pullingSheet == nil { pullingSheet = scrollAtTop && value.translation.height > 0 }
+                if pullingSheet == true { drag = max(value.translation.height, 0) }
+            }
+            .onEnded { value in
+                defer { pullingSheet = nil }
+                guard pullingSheet == true else { return }
+                settle(translation: max(value.translation.height, 0), predicted: max(value.predictedEndTranslation.height, 0), heights: heights)
+            }
     }
 
     private func settle(translation: CGFloat, predicted: CGFloat, heights: [CGFloat]) {
@@ -211,6 +291,16 @@ struct KitoSheetModifier<SheetContent: View>: ViewModifier {
     static func nearestDetent(to height: CGFloat, in heights: [CGFloat]) -> Int {
         heights.enumerated().min { abs($0.element - height) < abs($1.element - height) }?.offset ?? 0
     }
+}
+
+struct KitoSheetHeaderHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+struct KitoSheetScrollTopKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = nextValue() }
 }
 
 struct KitoSheetContentHeightKey: PreferenceKey {

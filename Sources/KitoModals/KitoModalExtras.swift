@@ -269,38 +269,79 @@ public struct KitoHeroCard<Collapsed: View, Expanded: View>: View {
 
 /// "Slide to pay": drag the knob to the end to confirm. It runs `onConfirm`, shows a spinner while
 /// it does, and ends on a tick. Tap or VoiceOver's activate also works.
+///
+/// If `onConfirm` throws, the knob shows a cross, the title reads `failureTitle` for a moment and
+/// the knob slides back so the person can try again. After a success it stays on the tick until
+/// `resetID` changes, or until `resetAfter` has passed if you set it.
+///
+/// ```swift
+/// KitoSlideToConfirm("Slide to pay", resetID: attempt) {
+///     try await checkout.pay()   // throw to report failure
+/// }
+/// ```
 public struct KitoSlideToConfirm: View {
     let title: String
     let systemImage: String
     let tint: Color?
-    let onConfirm: () async -> Void
+    let failureTitle: String
+    let resetAfter: Duration?
+    let resetID: AnyHashable?
+    let onConfirm: () async throws -> Void
 
     @Environment(\.kitoTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var offset: CGFloat = 0
     @State private var phase: Phase = .idle
     @State private var shimmer = false
+    @State private var run = 0
 
-    enum Phase { case idle, working, done }
+    enum Phase { case idle, working, done, failed }
 
-    public init(_ title: String = "Slide to confirm", systemImage: String = "chevron.right", tint: Color? = nil, onConfirm: @escaping () async -> Void) {
+    /// - Parameters:
+    ///   - title: the label on the track.
+    ///   - systemImage: the knob's icon at rest.
+    ///   - tint: knob and track colour; nil uses the theme's primary.
+    ///   - failureTitle: shown briefly when `onConfirm` throws.
+    ///   - resetAfter: after a success, go back to the start once this much time has passed.
+    ///     nil (default) stays on the tick.
+    ///   - resetID: change this value to put the control back to the start, e.g. after the
+    ///     person edits their order.
+    ///   - onConfirm: the work to do. Return to succeed; throw to fail and slide back.
+    public init(_ title: String = "Slide to confirm", systemImage: String = "chevron.right", tint: Color? = nil,
+                failureTitle: String = "Try again", resetAfter: Duration? = nil, resetID: AnyHashable? = nil,
+                onConfirm: @escaping () async throws -> Void) {
         self.title = title
         self.systemImage = systemImage
         self.tint = tint
+        self.failureTitle = failureTitle
+        self.resetAfter = resetAfter
+        self.resetID = resetID
         self.onConfirm = onConfirm
     }
 
     /// Past 85% of the track counts as a confirm.
     static func confirms(offset: CGFloat, track: CGFloat) -> Bool { track > 0 && offset >= track * 0.85 }
 
+    private var label: String {
+        switch phase {
+        case .done: return "Done"
+        case .failed: return failureTitle
+        case .idle, .working: return title
+        }
+    }
+
+    private var springBack: Animation { reduceMotion ? .easeInOut(duration: 0.2) : .spring(response: 0.4, dampingFraction: 0.7) }
+
     public var body: some View {
         GeometryReader { geometry in
             let knob: CGFloat = 56
             let track = max(geometry.size.width - knob - 8, 1)
             let color = tint ?? theme.colors.primary
+            let knobColor = phase == .failed ? theme.colors.danger : color
             ZStack(alignment: .leading) {
-                Capsule().fill(color.opacity(0.15))
-                Capsule().fill(color.opacity(0.35)).frame(width: offset + knob + 4)
-                Text(phase == .done ? "Done" : title)
+                Capsule().fill(knobColor.opacity(0.15))
+                Capsule().fill(knobColor.opacity(0.35)).frame(width: offset + knob + 4)
+                Text(label)
                     .font(.headline)
                     .foregroundStyle(theme.colors.onSurface.opacity(0.8))
                     .mask(
@@ -308,15 +349,16 @@ public struct KitoSlideToConfirm: View {
                             .offset(x: shimmer ? 160 : -160)
                     )
                     .frame(maxWidth: .infinity)
-                    .opacity(1 - Double(offset / track) * 0.9)
+                    .opacity(phase == .failed ? 1 : 1 - Double(offset / track) * 0.9)
                 Circle()
-                    .fill(color)
+                    .fill(knobColor)
                     .frame(width: knob, height: knob)
                     .overlay {
                         switch phase {
                         case .idle: Image(systemName: systemImage).font(.headline.bold()).foregroundStyle(theme.colors.onPrimary)
                         case .working: ProgressView().tint(theme.colors.onPrimary)
                         case .done: Image(systemName: "checkmark").font(.headline.bold()).foregroundStyle(theme.colors.onPrimary).transition(.scale)
+                        case .failed: Image(systemName: "xmark").font(.headline.bold()).foregroundStyle(theme.colors.onPrimary).transition(.scale)
                         }
                     }
                     .padding(4)
@@ -330,15 +372,17 @@ public struct KitoSlideToConfirm: View {
                             .onEnded { _ in
                                 guard phase == .idle else { return }
                                 if Self.confirms(offset: offset, track: track) { confirm(track: track) }
-                                else { withAnimation(.spring(response: 0.4, dampingFraction: 0.7)) { offset = 0 } }
+                                else { withAnimation(springBack) { offset = 0 } }
                             }
                     )
             }
         }
         .frame(height: 64)
         .onAppear { withAnimation(.linear(duration: 1.8).repeatForever(autoreverses: false)) { shimmer = true } }
+        .onChange(of: resetID) { _, _ in reset() }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(title)
+        .accessibilityValue(phase == .done ? "Done" : phase == .failed ? failureTitle : "")
         .accessibilityAddTraits(.isButton)
         .accessibilityAction { if phase == .idle { confirm(track: nil) } }
     }
@@ -348,9 +392,37 @@ public struct KitoSlideToConfirm: View {
             if let track { offset = track }
             phase = .working
         }
-        Task {
-            await onConfirm()
-            withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) { phase = .done }
+        run += 1
+        let thisRun = run
+        Task { @MainActor in
+            do {
+                try await onConfirm()
+                guard thisRun == run else { return }
+                withAnimation(.spring(response: 0.4, dampingFraction: 0.6)) { phase = .done }
+                if let resetAfter {
+                    try? await Task.sleep(for: resetAfter)
+                    if thisRun == run, phase == .done { reset() }
+                }
+            } catch {
+                guard thisRun == run else { return }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) { phase = .failed }
+                AccessibilityNotification.Announcement(failureTitle).post()
+                try? await Task.sleep(for: .milliseconds(450))
+                guard thisRun == run else { return }
+                withAnimation(springBack) { offset = 0 }
+                try? await Task.sleep(for: .milliseconds(900))
+                guard thisRun == run, phase == .failed else { return }
+                withAnimation(.easeInOut(duration: 0.2)) { phase = .idle }
+            }
+        }
+    }
+
+    /// Back to the start: knob home, title restored. Any result still on its way is ignored.
+    private func reset() {
+        run += 1
+        withAnimation(springBack) {
+            offset = 0
+            phase = .idle
         }
     }
 }
